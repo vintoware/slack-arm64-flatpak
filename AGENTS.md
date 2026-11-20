@@ -53,6 +53,20 @@ Slack's `.deb` and Slack's arm64 `slack-desktop-utils` prebuild are `extra-data`
 - The `.deb` is checked against Slack's CDN URL at install time. A `SLACK_SOURCE_FILE` that
   differs from the CDN file therefore produces a repo nobody can install from.
 
+## Camera: PipeWire + portal, with `pw-camera-filter`
+The launcher enables `WebRtcPipeWireCamera`, so Chromium reaches the camera through the
+xdg camera portal and PipeWire, and the manifest needs no `--device=all`. Chromium's
+PipeWire capture ignores the buffer stride. Apple Silicon's camera (`apple-isp`, Asahi) pads
+rows to 64 bytes, so any mode whose width isn't a multiple of 64 shows up sheared. Chromium
+picks such modes (480x640) for small requests like Slack's preview. The direct V4L2 path
+(`--device=all`) is sheared the same way.
+`manifest/pw-camera-filter/` builds a wrapper `/app/lib/libpipewire-0.3.so.0`. Chromium
+`dlopen`s it ahead of the runtime's copy. It forwards everything to the real library
+(the `libpipewire-0.3-real.so.0` symlink) but wraps `pw_proxy_add_object_listener`. For
+apple-isp nodes it drops `EnumFormat` entries with a width that isn't 64-aligned. Switch it
+off with `SLACK_PW_CAMERA_FILTER=0`. If another camera driver pads rows, extend
+`driver_pads_rows()`.
+
 ## Publishing (`.github/workflows/build.yml`)
 This repo only builds. Hosting, signing and Pages are handled by the separate
 [`vintoware/flatpak-repo`](https://github.com/vintoware/flatpak-repo):

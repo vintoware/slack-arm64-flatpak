@@ -24,6 +24,12 @@
   ],
   "modules": [
     {
+      "name": "pw-camera-filter",
+      "buildsystem": "simple",
+      "sources": [ { "type": "dir", "path": "pw-camera-filter" } ],
+      "build-commands": [ "sh build.sh" ]
+    },
+    {
       "name": "slack",
       "buildsystem": "simple",
       "sources": [

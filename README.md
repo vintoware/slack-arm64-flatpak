@@ -186,6 +186,13 @@ manifest/                 # com.slack.Slack.json, slack-install.sh, apply_extra,
 .github/workflows/        # scheduled release check, build, release, hand-off to flatpak-repo
 ```
 
+## Camera
+
+The camera goes through PipeWire and the xdg camera portal (Chromium's
+`WebRtcPipeWireCamera`), so the sandbox needs no device access. On Apple Silicon
+(Asahi), `pw-camera-filter` hides the camera modes with padded rows, which Chromium
+would otherwise show sheared. See AGENTS.md.
+
 ## Known limitations
 - **Screen share** (Slack "Share Screen") depends on the Wayland/X11 screencast
   portal — the least reliable sandboxed feature. Audio/video calls work.

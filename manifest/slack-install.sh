@@ -27,9 +27,11 @@ install -D -m 755 apply_extra /app/bin/apply_extra
 
 # 4) launcher. The setuid chrome-sandbox is not usable inside a flatpak sandbox,
 #    so disable the SUID sandbox (Electron falls back to/without the ns sandbox).
+#    WebRtcPipeWireCamera: use the camera through PipeWire + the xdg camera portal,
+#    so no --device=all is needed (see pw-camera-filter for the Apple camera fix).
 cat > /app/bin/slack <<'LAUNCHER'
 #!/bin/sh
-exec /app/slack/slack --no-sandbox --disable-gpu-sandbox "$@"
+exec /app/slack/slack --no-sandbox --disable-gpu-sandbox --enable-features=WebRtcPipeWireCamera "$@"
 LAUNCHER
 chmod 755 /app/bin/slack
 
