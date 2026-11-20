@@ -9,8 +9,9 @@
  * camera preview negotiates 480x640).
  *
  * Fix: this library is installed as /app/lib/libpipewire-0.3.so.0, which Chromium
- * dlopen()s ahead of the runtime's libpipewire. It links to the real library
- * (via the libpipewire-0.3-real.so.0 symlink), so every symbol resolves to the real
+ * dlopen()s ahead of the runtime's libpipewire. Its DT_NEEDED is the runtime's real
+ * library by absolute path (REAL_LIBPIPEWIRE). A bare name would have to be found
+ * via ld.so.cache, which only indexes SONAMEs. So every symbol resolves to the real
  * implementation, except pw_proxy_add_object_listener. libpipewire's protocol
  * module calls that when Chromium adds a node listener. For apple-isp camera nodes
  * we wrap the listener and drop EnumFormat params whose width isn't 64-aligned, so
@@ -48,9 +49,9 @@ static void resolve(void)
 {
 	if (real_add_object_listener)
 		return;
-	void *real = dlopen("libpipewire-0.3-real.so.0", RTLD_NOW | RTLD_NOLOAD);
+	void *real = dlopen(REAL_LIBPIPEWIRE, RTLD_NOW | RTLD_NOLOAD);
 	if (!real)
-		real = dlopen("libpipewire-0.3-real.so.0", RTLD_NOW);
+		real = dlopen(REAL_LIBPIPEWIRE, RTLD_NOW);
 	if (!real) {
 		fprintf(stderr, "pw-camera-filter: cannot open real libpipewire: %s\n", dlerror());
 		abort();

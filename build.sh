@@ -80,7 +80,14 @@ OUT_DIR="$REPO_ROOT/dist"
 # what it needs, and the flatpak stage uses its own user-owned dir ($HERE/.fp).
 # Persistent caches (.cache, .npm-cache) are kept so repeat builds don't
 # re-download. (CI runners typically clear the whole workspace anyway.)
-rm -rf "$WORK" 2>/dev/null || true
+# REUSE_OVERLAY=1 (dev): keep .work and skip the native stage when the overlay for
+# this version already exists, to iterate on the flatpak stage quickly.
+REUSE=0
+if [ "${REUSE_OVERLAY:-0}" = 1 ] && [ -f "$WORK/out/slack-overlay-$SLACK_VERSION-arm64.tar.xz" ]; then
+  REUSE=1
+else
+  rm -rf "$WORK" 2>/dev/null || true
+fi
 mkdir -p "$CACHE_DIR" "$WORK/out" "$OUT_DIR" \
   "$HERE/.npm-cache" "$HERE/.flatpak-user" "$HERE/.flatpak-cache" "$HERE/.flatpak"
 
@@ -89,6 +96,7 @@ PLATFORM_ARGS=()
 
 log(){ printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 
+if [ "$REUSE" = 0 ]; then
 # ---- 1) secure the Slack source package ----
 # Staged into the persistent cache (keyed by version), so a later build reuses it
 # and the ~100 MB package is downloaded at most once per version.
@@ -122,6 +130,10 @@ docker run --rm "${PLATFORM_ARGS[@]}" "${ENGINE_RUN_ARGS[@]}" \
   -v "$HERE/.npm-cache:/root/.npm" \
   slack-flatpak-native:latest \
   bash /work/scripts/build-all.sh
+
+else
+  log "REUSE_OVERLAY=1: reusing $WORK/out (native stage skipped)"
+fi
 
 OVERLAY="$WORK/out/slack-overlay-$SLACK_VERSION-arm64.tar.xz"
 EXTRA_ENV="$WORK/out/extra-data.env"
