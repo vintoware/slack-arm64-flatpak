@@ -4,16 +4,9 @@
   "runtime-version": "@RUNTIME_VERSION@",
   "sdk": "@RUNTIME_SDK@",
   "sdk-version": "@RUNTIME_VERSION@",
-  "name": "Slack",
-  "icon": "slack",
   "command": "slack",
-  "appstream": {
-    "name": "Slack",
-    "summary": "Slack Desktop",
-    "description": "Make work life simpler, more pleasant and more productive.\n\nSlack is the productivity platform that empowers everyone with no-code automation and AI, makes search and knowledge sharing seamless, and keeps teams connected and engaged.",
-    "categories": ["Network", "InstantMessaging"],
-    "keywords": ["chat", "team", "collaboration", "messaging"]
-  },
+  "separate-locales": false,
+  "appstream-compose": false,
   "finish-args": [
     "--share=ipc",
     "--share=network",
@@ -34,11 +27,32 @@
       "name": "slack",
       "buildsystem": "simple",
       "sources": [
-        { "type": "file", "path": "slack-arm64.tar.xz" },
-        { "type": "file", "path": "slack-install.sh" }
+        { "type": "file", "path": "slack-overlay.tar.xz" },
+        { "type": "file", "path": "slack-install.sh" },
+        { "type": "file", "path": "apply_extra" },
+        { "type": "file", "path": "metainfo.xml" },
+        {
+          "type": "file",
+          "url": "https://raw.githubusercontent.com/flathub/com.slack.Slack/5ca042e7dd604eb51238c11b9dfc38e1119e34d6/slack.svg",
+          "sha256": "717085b5547111e5c5f7482f1241d94d52bbbdb5d655fd583094c1be09c746ae"
+        },
+        {
+          "type": "extra-data",
+          "filename": "slack.deb",
+          "url": "@SLACK_DEB_URL@",
+          "sha256": "@SLACK_DEB_SHA256@",
+          "size": @SLACK_DEB_SIZE@
+        },
+        {
+          "type": "extra-data",
+          "filename": "slack-desktop-utils.tar.gz",
+          "url": "@SDU_URL@",
+          "sha256": "@SDU_SHA256@",
+          "size": @SDU_SIZE@
+        }
       ],
       "build-commands": [
-        "tar xJf slack-arm64.tar.xz --no-same-owner",
+        "tar xJf slack-overlay.tar.xz --no-same-owner",
         "sh slack-install.sh"
       ]
     }

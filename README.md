@@ -1,34 +1,57 @@
-# Slack Desktop for Linux aarch64 — Flatpak
+# Slack Desktop for Linux aarch64 — Flatpak repo
 
-A **self-contained Flatpak bundle** of Slack Desktop that runs natively on
-**aarch64 (arm64)** on any distro with Flatpak. Slack publishes the x86_64
-Flatpak; this project builds the **aarch64 complement**, using the official
-Slack package as the source of truth and Docker for a clean, reproducible build.
+Slack Desktop running natively on **aarch64 (arm64)** Linux, from a Flatpak repo
+hosted on GitHub Pages and rebuilt by GitHub Actions every time Slack ships a release.
 
-The deliverable is a single file: `dist/com.slack.Slack.aarch64.flatpak`.
+Fork of [Josholith/slack-linux-arm64-flatpak](https://github.com/Josholith/slack-linux-arm64-flatpak)
+(MIT). It keeps the upstream build and adds two things:
 
-> **Maintainers:** see **AGENTS.md** for the non-obvious implementation rationale and
-> gotchas (the intentional arch asymmetry, flatpak-builder quirks, and the rule
-> against committing build artifacts) before modifying the build.
+- **No Slack binaries are redistributed.** The flatpak uses
+  [extra-data](https://docs.flatpak.org/en/latest/module-sources.html#extra-data), the same way
+  Flathub's `com.slack.Slack` does. The repo only contains an arm64 Electron runtime,
+  native modules built from MIT-licensed npm sources, and no-op stubs. When you install or
+  update, flatpak downloads Slack's official `.deb` and Slack's arm64
+  `slack-desktop-utils` prebuild **from Slack's servers**, checks their SHA-256 hashes, and
+  assembles the app on your machine (`manifest/apply_extra`).
+- **Automatic updates.** `.github/workflows/build.yml` checks Slack's release API every
+  4 hours. For a new version it builds on a native arm64 runner, adds the result to the
+  signed OSTree repo on GitHub Pages, and creates a GitHub release.
+
+> Unofficial. Not affiliated with or supported by Slack.
+
+## Install
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --user --if-not-exists slack-arm64 https://vintoware.github.io/slack-arm64-flatpak/slack-arm64.flatpakrepo
+flatpak install --user slack-arm64 com.slack.Slack
+```
+
+New Slack versions arrive with a regular `flatpak update`. Flathub provides the
+`org.gnome.Platform` runtime. The repo is signed with the key in `slack-arm64-flatpak.gpg.asc`
+(fingerprint `53642E94B0CC55BAB30D88A2347FA5BF6B767DC1`).
 
 ## How it works
 
 ```
-official Slack package (.deb/.rpm, x86_64)
-    │  native/01-fetch-slack.sh       extract + normalize the app tree
-    │  native/02-detect-versions.sh   read Electron + native-module versions
-    │  native/03-arm64-electron.sh    swap in the matching arm64 Electron
-    │  native/04-build-native.sh      build/fetch arm64 native modules
-    │  native/05-assemble.sh          package slack-<VER>-arm64.tar.xz
-    ▼
-dist/slack-<VER>-arm64.tar.xz   (intermediate payload)
-    │  manifest/ (org.gnome.Platform:51, zero build modules)
-    ▼
-dist/com.slack.Slack.aarch64.flatpak   (the deliverable)
+official Slack .deb (x86_64)  ──►  native/01..04   detect Slack's Electron + module versions,
+                                                   build/fetch arm64 native modules, and
+                                                   verify a full arm64 tree (build-time only)
+                                   native/05       package ONLY the redistributable parts:
+                                                   arm64 Electron + open-source .node + stubs
+                                                   ─► slack-overlay-<VER>-arm64.tar.xz
+                                                   ─► extra-data.env (Slack URLs + sha256 + size)
+manifest/ (org.gnome.Platform:51)  ──►  flatpak-builder: /app = overlay, launcher, desktop file,
+                                        icon, metainfo; extra-data = Slack .deb + SDU prebuild
+ci/publish-repo.sh                 ──►  signed OSTree repo + .flatpakrepo/.flatpakref on Pages
+
+on the user's machine, at install/update time (flatpak, no network in the hook):
+  download slack.deb + slack-desktop-utils.tar.gz from Slack  ──►  apply_extra:
+  resources/ from the .deb → /app/extra/resources (symlinked from /app/slack/resources),
+  overlay arm64 .node files + Slack's arm64 slack-desktop-utils, refuse if any x86-64 remains
 ```
 
-All stages run inside Docker (see `Dockerfile.native`, `Dockerfile.flatpak`),
-so the host stays clean.
+All build stages run in containers (Docker, or podman locally), so the host stays clean.
 
 ### Native modules (aarch64)
 | Module | Source |
@@ -45,6 +68,21 @@ ships, so the app is a **pure file copy — zero build modules**. Flathub serves
 `org.gnome.Platform` for aarch64 (current branch **51**). See **AGENTS.md** for the
 full list of linked libraries and the reasoning.
 
+
+## CI / repo hosting
+
+| Piece | Where |
+|---|---|
+| Release check | Slack's API: `https://slack.com/api/desktop.latestRelease?arch=x64&variant=deb` |
+| "Already built?" | a GitHub release tagged `v<slack version>` exists |
+| Build runner | `ubuntu-24.04-arm` (native arm64, so no QEMU) |
+| Flatpak repo | GitHub Pages (`actions/deploy-pages`); `ci/publish-repo.sh` mirrors the published commit back first, so updates ship as small static deltas. History is pruned to one parent |
+| Signing | `GPG_PRIVATE_KEY` repository secret (no passphrase). The public key is embedded in the `.flatpakrepo` and `.flatpakref` files |
+| Manual run | Actions → *Build and publish* → *Run workflow* (optional `version`, `force`) |
+
+If Slack hasn't published the arm64 `slack-desktop-utils` prebuild for a new release
+yet, stage 04 fails. No release gets created, so the next scheduled run tries again.
+
 ## How this differs from Slacky
 
 [Slacky](https://github.com/andirsun/Slacky) also exists to give arm64 Linux a usable
@@ -58,7 +96,7 @@ Slack, and it's a fine project — but it takes the **opposite** approach.
 | **Native modules** | none to manage (a generic Electron app) | Slack's **proprietary** `.node` modules, rebuilt/fetched for arm64 |
 | **Runs** | Slack's **web client**, over the network | the **native desktop** client (offline-capable) |
 | **Arm64 method** | build a normal Electron app for arm64 | swap in arm64 Electron + arm64 native modules |
-| **Packaging** | AppImage / deb / rpm (electron-builder) | a self-contained **Flatpak** bundle |
+| **Packaging** | AppImage / deb / rpm (electron-builder) | a **Flatpak** repo (Slack downloaded as extra-data) |
 | **How it builds** | CircleCI on a native arm64 runner | Docker (native on arm64, or cross via QEMU on x86_64) |
 
 The practical consequences of that split:
@@ -94,20 +132,20 @@ maintained wrapper (Slacky).
 
 ## Quick start
 ```sh
-# The build downloads the official amd64 .deb from Slack's CDN automatically
-# (no browser needed) — just make sure SLACK_VERSION points at a real release.
-cp .env.example .env
-$EDITOR .env        # set SLACK_VERSION (and SLACK_SOURCE_FILE to pin a local file)
-./build.sh
+# SLACK_VERSION defaults to Slack's latest release (from Slack's API).
+./build.sh                          # docker, or podman if docker is absent
+SLACK_VERSION=4.53.287 ./build.sh   # a specific version
 ```
 
 Outputs in `dist/`:
 
 | File | What |
 |------|------|
-| `com.slack.Slack.aarch64.flatpak` | **the deliverable** — self-contained, install anywhere |
-| `slack-<VER>-arm64.tar.xz` | intermediate aarch64 payload |
+| `com.slack.Slack.aarch64.flatpak` | bundle; installing it downloads Slack via extra-data |
 | `build-inputs.json` | versions + SHA-256 (reproducibility record) |
+| `extra-data.env` | the Slack package URLs/hashes the build declares |
+
+`.fp/repo` holds the OSTree repo that `ci/publish-repo.sh` folds into the published one.
 
 Install on any machine with Flatpak:
 ```sh
@@ -116,10 +154,10 @@ flatpak run com.slack.Slack
 ```
 
 ## Updating to a new Slack version
-1. Download the new official `.deb`/`.rpm`.
-2. Set `SLACK_VERSION` + `SLACK_SOURCE_FILE` in `.env`.
-3. `./build.sh` — Electron, native-module, napi and S3-prebuild versions are
-   **auto-detected** from the package.
+CI does this automatically. By hand: `SLACK_VERSION=<ver> ./build.sh`. The Electron,
+native-module, napi and S3-prebuild versions are **auto-detected** from the package.
+A local `SLACK_SOURCE_FILE` must be byte-identical to the file on Slack's CDN, because
+users' machines download it from there and check its hash.
 
 ## Configuration
 See `.env.example`. Key knobs:
@@ -141,7 +179,9 @@ Dockerfile.native         # node + toolchain + X11/xkbfile headers
 Dockerfile.flatpak        # flatpak + flatpak-builder
 .env.example              # all knobs
 native/                   # 01-fetch → 02-detect → 03-electron → 04-native → 05-assemble (+ stubs/)
-manifest/                 # com.slack.Slack.json + slack-install.sh
+manifest/                 # com.slack.Slack.json, slack-install.sh, apply_extra, metainfo.xml
+ci/publish-repo.sh        # fold a build into the Pages-hosted OSTree repo + site files
+.github/workflows/        # scheduled release check, build, publish
 ```
 
 ## Known limitations

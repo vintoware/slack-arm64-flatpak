@@ -2,7 +2,8 @@
 #
 # build-all.sh — run the native build stages in order (inside the native image,
 # or on the host for arch-agnostic stages). Produces:
-#   $WORK/out/slack-<VER>-arm64.tar.xz
+#   $WORK/out/slack-overlay-<VER>-arm64.tar.xz   (redistributable arm64 parts only)
+#   $WORK/out/extra-data.env                    (URLs/hashes of Slack's packages)
 #   $WORK/out/build-inputs.json
 #
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -20,7 +21,7 @@ do
   bash "$S/$stage"
 done
 
-PAYLOAD="$OUT/slack-$SLACK_VERSION-arm64.tar.xz"
-[ -f "$PAYLOAD" ] || die "payload was not produced: $PAYLOAD"
+OVERLAY="$OUT/slack-overlay-$SLACK_VERSION-arm64.tar.xz"
+[ -f "$OVERLAY" ] || die "overlay was not produced: $OVERLAY"
 echo
-echo "PAYLOAD OK: $PAYLOAD ($(du -h "$PAYLOAD" | cut -f1))"
+echo "OVERLAY OK: $OVERLAY ($(du -h "$OVERLAY" | cut -f1))"

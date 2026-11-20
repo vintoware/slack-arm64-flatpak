@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>@APP_ID@</id>
+  <name>Slack</name>
+  <summary>Slack Desktop (unofficial arm64 build)</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="com.slack">
+    <name>Slack Technologies</name>
+  </developer>
+  <description>
+    <p>Make work life simpler, more pleasant and more productive.</p>
+    <p>
+      Unofficial aarch64 build. It runs Slack's official Linux package on an arm64
+      Electron runtime; the Slack package itself is downloaded from Slack at install
+      time and is not redistributed. Not affiliated with or supported by Slack.
+    </p>
+  </description>
+  <launchable type="desktop-id">@APP_ID@.desktop</launchable>
+  <url type="homepage">https://slack.com/</url>
+  <url type="bugtracker">@PROJECT_URL@/issues</url>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <releases>
+    <release version="@SLACK_VERSION@" date="@RELEASE_DATE@"/>
+  </releases>
+</component>

@@ -20,3 +20,4 @@ dist/
 
 # editor / OS noise
 .DS_Store
+site/

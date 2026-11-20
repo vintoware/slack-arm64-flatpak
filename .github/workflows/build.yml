@@ -1,0 +1,110 @@
+name: Build and publish
+
+# Checks Slack's latest Linux release every 4 hours. When there is no GitHub release
+# for it yet, builds the aarch64 flatpak, folds it into the Flatpak repo served from
+# GitHub Pages, and creates the release (which also marks the version as done).
+# If Slack's arm64 slack-desktop-utils prebuild isn't published yet, the build fails
+# and the next scheduled run retries.
+
+on:
+  schedule:
+    - cron: "41 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Slack version to build (default: Slack's latest)"
+        type: string
+        default: ""
+      force:
+        description: "Rebuild and republish even if this version is already released"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: slack-arm64-flatpak
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - name: Resolve Slack version
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(curl -fsS --retry 3 'https://slack.com/api/desktop.latestRelease?arch=x64&variant=deb&redirect=false' \
+              | jq -er 'select(.ok) | .version')
+          fi
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "::error::unexpected Slack version '$version'"; exit 1; }
+          build=true
+          if [ "$FORCE" != true ] && gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=false
+          fi
+          echo "Slack $version -> build=$build"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      SLACK_VERSION: ${{ needs.check.outputs.version }}
+      PROJECT_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pages URL
+        run: echo "SITE_URL=https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+
+      - name: Build flatpak
+        run: ./build.sh
+
+      - name: Assemble Flatpak repo
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e GPG_PRIVATE_KEY -e SITE_URL -e SLACK_VERSION -e PROJECT_URL -e GITHUB_REPOSITORY \
+            slack-flatpak-builder:latest bash ci/publish-repo.sh
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$SLACK_VERSION"
+          files=(dist/*.flatpak dist/build-inputs.json)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            notes="Slack $SLACK_VERSION for aarch64, published to $SITE_URL
+
+          Install: \`flatpak remote-add --user slack-arm64 $SITE_URL/slack-arm64.flatpakrepo && flatpak install --user slack-arm64 com.slack.Slack\`
+
+          The bundle below contains no Slack code; Slack's package is downloaded from Slack at install time."
+            gh release create "$tag" "${files[@]}" --title "Slack $SLACK_VERSION (arm64)" --notes "$notes"
+          fi

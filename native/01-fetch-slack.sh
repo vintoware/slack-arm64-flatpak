@@ -38,6 +38,13 @@ else
 fi
 
 sha256sum "$PKG" | awk '{print $1}' > "$BUILD/input-sha256.txt"
+stat -c %s "$PKG" > "$BUILD/input-size.txt"
+# The flatpak never contains this package: it is declared as extra-data and
+# downloaded by flatpak on the user's machine at install time, from Slack's own
+# CDN. Record the URL it will be fetched from. A local SLACK_SOURCE_FILE must be
+# byte-identical to the CDN file, or the install-time sha256 check will fail.
+echo "${SLACK_SOURCE_URL:-https://downloads.slack-edge.com/desktop-releases/linux/x64/${SLACK_VERSION}/slack-desktop-${SLACK_VERSION}-amd64.deb}" \
+  > "$BUILD/input-url.txt"
 case "$PKG" in
   *.deb) TYPE=deb ;;
   *.rpm) TYPE=rpm ;;
@@ -64,6 +71,8 @@ for d in "$BUILD/extracted/opt/slack" "$BUILD/extracted/usr/lib/slack"; do
 done
 [ -n "$APP_SRC" ] || die "Could not find the app tree (opt/slack or usr/lib/slack) in the package"
 log "App tree: $APP_SRC"
+# Path of the app tree inside the package, e.g. usr/lib/slack (apply_extra needs it).
+echo "${APP_SRC#"$BUILD/extracted/"}" > "$BUILD/input-appdir.txt"
 
 mkdir -p "$APP_ROOT"
 cp -a "$APP_SRC/." "$APP_ROOT/"

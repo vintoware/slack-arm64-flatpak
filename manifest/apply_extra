@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# apply_extra — runs at INSTALL time on the user's machine, after flatpak has
+# downloaded the extra-data (Slack's official packages) into /app/extra.
+# It runs in the sandbox with no network, cwd=/app/extra, /app read-only.
+#
+# It finishes the app: Slack's resources/ (app.asar + friends) are taken from the
+# official .deb, then the x86-64 native modules inside are replaced with arm64
+# ones — the open-source builds/stubs shipped in /app/lib/slack-native, and Slack's
+# own arm64 slack-desktop-utils prebuild (the second extra-data file).
+# /app/slack/resources is a symlink to /app/extra/resources.
+#
+# build.sh renders @SLACK_DEB_APPDIR@ (e.g. usr/lib/slack) and @SDU_DEST@.
+#
+set -eu
+
+DEB_APPDIR="@SLACK_DEB_APPDIR@"
+SDU_DEST="@SDU_DEST@"
+NM=resources/app.asar.unpacked/node_modules
+
+rm -rf resources _deb _sdu
+
+# 1) Slack's resources/ from the official package
+mkdir _deb
+bsdtar -Oxf slack.deb 'data.tar*' | bsdtar -xf - -C _deb "./$DEB_APPDIR/resources"
+[ -f "_deb/$DEB_APPDIR/resources/app.asar" ] || { echo "apply_extra: app.asar not found in slack.deb" >&2; exit 1; }
+mv "_deb/$DEB_APPDIR/resources" resources
+rm -rf _deb slack.deb
+
+# 2) arm64 native modules built from open source + no-op stubs
+cp -a /app/lib/slack-native/. "$NM/"
+
+# 3) Slack's proprietary arm64 slack-desktop-utils prebuild
+mkdir _sdu
+bsdtar -xf slack-desktop-utils.tar.gz -C _sdu
+SDU_NODE="$(find _sdu -name slackdesktoputils.node | head -n 1)"
+[ -n "$SDU_NODE" ] || { echo "apply_extra: slackdesktoputils.node not in prebuild" >&2; exit 1; }
+install -D -m 644 "$SDU_NODE" "$NM/$SDU_DEST"
+rm -rf _sdu slack-desktop-utils.tar.gz
+
+# 4) refuse to finish with an x86-64 module left behind (Slack would crash on it)
+BAD="$(find resources -name '*.node' -exec file {} + | grep -v aarch64 || true)"
+[ -z "$BAD" ] || { echo "apply_extra: non-arm64 native modules remain:" >&2; echo "$BAD" >&2; exit 1; }

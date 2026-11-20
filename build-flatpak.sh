@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # build-flatpak.sh — runs INSIDE the flatpak Docker image (as the container's default user). Builds a
-# self-contained `.flatpak` bundle from the staged manifest + payload tarball in
+# self-contained `.flatpak` bundle (+ the OSTree repo it came from) from the staged manifest + overlay in
 # /work. flatpak does a per-user install (its own `--user` flag — not OS
 # privileges) under /root/.local/share/flatpak, which is host-mounted so the
 # aarch64 runtime is cached across builds. No host/root privilege is needed.
@@ -36,11 +36,30 @@ flatpak install --user -y --noninteractive flathub \
   "$FLATPAK_SDK/$FLATPAK_ARCH/$FLATPAK_RUNTIME_VERSION" \
   "$FLATPAK_RUNTIME/$FLATPAK_ARCH/$FLATPAK_RUNTIME_VERSION"
 
-# Build the app layer against the installed base (aarch64 runtime sandbox), then
-# emit a local repo for build-bundle. (elfutils/eu-strip is in the image for the
-# debuginfo strip step.)
-flatpak-builder --force-clean --user --arch="$FLATPAK_ARCH" \
-  --repo=repo build-dir manifest.json
+# Build the app layer against the installed base (aarch64 runtime sandbox).
+# (elfutils/eu-strip is in the image for the debuginfo strip step.)
+#
+# AppStream: the manifest sets "appstream-compose": false and we compose here
+# instead. On GNOME 49+ runtimes, flatpak-builder's in-sandbox `appstreamcli
+# compose` loads icons through glycin, which sandboxes its loaders with
+# `flatpak-spawn --sandbox`. That needs the Flatpak portal on a session bus, which a
+# container doesn't have ("file-read-error" on the icon). Debian's appstreamcli
+# renders the icon directly. The catalog is what gives the repo's appstream branch
+# (software centers) its name, description and icon.
+flatpak-builder --force-clean --user --arch="$FLATPAK_ARCH" build-dir manifest.json
+
+appstreamcli compose --no-net --prefix=/ \
+  --origin="$SLACK_APP_ID" \
+  --result-root=build-dir/files \
+  --data-dir=build-dir/files/share/app-info/xmls \
+  --icons-dir=build-dir/files/share/app-info/icons/flatpak \
+  --components="$SLACK_APP_ID,$SLACK_APP_ID.desktop" \
+  build-dir/files
+[ -s "build-dir/files/share/app-info/xmls/$SLACK_APP_ID.xml.gz" ] || { echo "appstream compose produced no catalog" >&2; exit 1; }
+
+# Export to a local repo (commits the extra-data declarations from the metadata).
+rm -rf repo
+flatpak build-export --arch="$FLATPAK_ARCH" repo build-dir master
 
 flatpak --user list
 

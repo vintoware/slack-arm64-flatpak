@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         flatpak \
         flatpak-builder \
         ostree \
+        gnupg \
+        appstream-compose \
+        librsvg2-common \
         elfutils \
         python3 \
         ca-certificates \

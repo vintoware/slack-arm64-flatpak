@@ -3,21 +3,24 @@
 # build.sh — Build the Slack Desktop aarch64 Flatpak, entirely inside Docker.
 #
 # Slack publishes an x86_64 Flatpak; this repo builds the aarch64 complement.
-# The output is a self-contained .flatpak bundle — the sole deliverable of this
-# project. (The arm64 payload .tar.xz is only an intermediate for flatpak-builder.)
+# The flatpak contains only redistributable parts (arm64 Electron, open-source
+# native modules, stubs, launcher). Slack's own package is declared as extra-data
+# and downloaded from Slack on the user's machine at install time (apply_extra).
 #
 # Runs on any Docker host. An aarch64 host builds natively (fastest); an x86_64
 # host cross-builds aarch64 via QEMU (BUILD_PLATFORM=linux/arm64) — fully
 # supported, just a bit slower.
 #
 # Usage:
-#   ./build.sh                                        # reads ./.env
-#   SLACK_SOURCE_FILE=~/Downloads/slack-4.50.143-amd64.deb ./build.sh
+#   ./build.sh                        # reads ./.env; SLACK_VERSION defaults to Slack's latest
+#   SLACK_VERSION=4.53.287 ./build.sh
+#   CONTAINER_ENGINE=podman ./build.sh   # docker is the default; podman is auto-used if docker is absent
 #
-# Outputs (in ./dist/):
-#   com.slack.Slack.aarch64.flatpak   self-contained, installable on any distro
-#   slack-<VER>-arm64.tar.xz          intermediate payload
-#   build-inputs.json                 versions + hashes (reproducibility record)
+# Outputs:
+#   dist/com.slack.Slack.aarch64.flatpak   bundle (installs Slack via extra-data)
+#   dist/build-inputs.json                 versions + hashes (reproducibility record)
+#   dist/extra-data.env                    Slack package URLs/hashes used
+#   .fp/repo                               OSTree repo with the build (ci/publish-repo.sh)
 #
 set -euo pipefail
 
@@ -26,7 +29,14 @@ REPO_ROOT="$HERE"   # build.sh lives at the repo root
 
 # ---- config ----
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
-: "${SLACK_VERSION:?SLACK_VERSION must be set (./.env or env)}"
+: "${SLACK_VERSION:=}"
+if [ -z "$SLACK_VERSION" ]; then
+  SLACK_VERSION="$(curl -fsS --retry 3 'https://slack.com/api/desktop.latestRelease?arch=x64&variant=deb&redirect=false' \
+    | sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p')"
+  [ -n "$SLACK_VERSION" ] || { echo "could not determine the latest Slack version; set SLACK_VERSION" >&2; exit 1; }
+  echo "SLACK_VERSION not set; using Slack's latest: $SLACK_VERSION"
+fi
+: "${PROJECT_URL:=https://github.com/vintoware/slack-arm64-flatpak}"
 : "${SLACK_APP_ID:=com.slack.Slack}"
 : "${FLATPAK_RUNTIME:=org.gnome.Platform}"
 : "${FLATPAK_RUNTIME_VERSION:=51}"
@@ -51,7 +61,16 @@ if [ -z "${BUILD_PLATFORM:-}" ]; then
   esac
 fi
 
-command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+# Container engine: docker (default) or podman. Rootless podman needs SELinux
+# relabelling disabled for the bind mounts.
+if [ -z "${CONTAINER_ENGINE:-}" ]; then
+  if command -v docker >/dev/null 2>&1; then CONTAINER_ENGINE=docker
+  elif command -v podman >/dev/null 2>&1; then CONTAINER_ENGINE=podman
+  else echo "docker or podman is required" >&2; exit 1; fi
+fi
+ENGINE_RUN_ARGS=()
+[ "$(basename "$CONTAINER_ENGINE")" = podman ] && ENGINE_RUN_ARGS+=(--security-opt label=disable)
+docker() { "$CONTAINER_ENGINE" "$@"; }
 
 WORK="$HERE/.work"
 CACHE_DIR="${SLACK_CACHE_DIR:-$HERE/.cache}"
@@ -63,7 +82,8 @@ OUT_DIR="$REPO_ROOT/dist"
 # Persistent caches (.cache, .npm-cache) are kept so repeat builds don't
 # re-download. (CI runners typically clear the whole workspace anyway.)
 rm -rf "$WORK" 2>/dev/null || true
-mkdir -p "$CACHE_DIR" "$WORK/out" "$OUT_DIR"
+mkdir -p "$CACHE_DIR" "$WORK/out" "$OUT_DIR" \
+  "$HERE/.npm-cache" "$HERE/.flatpak-user" "$HERE/.flatpak-cache" "$HERE/.flatpak"
 
 PLATFORM_ARGS=()
 [ -n "$BUILD_PLATFORM" ] && PLATFORM_ARGS+=(--platform "$BUILD_PLATFORM")
@@ -86,14 +106,14 @@ else
   echo "No SLACK_SOURCE_FILE / SLACK_SOURCE_URL set — will download into $CACHE_DIR."
 fi
 
-# ---- 2) native stage -> aarch64 payload ----
-log "Building aarch64 payload (native Docker image: $NATIVE_BASE_IMAGE)"
+# ---- 2) native stage -> redistributable aarch64 overlay + extra-data info ----
+log "Building aarch64 overlay (native Docker image: $NATIVE_BASE_IMAGE)"
 docker build "${PLATFORM_ARGS[@]}" \
   --build-arg BASE_IMAGE="$NATIVE_BASE_IMAGE" \
   -t slack-flatpak-native:latest \
   -f "$HERE/Dockerfile.native" "$HERE"
 
-docker run --rm "${PLATFORM_ARGS[@]}" \
+docker run --rm "${PLATFORM_ARGS[@]}" "${ENGINE_RUN_ARGS[@]}" \
   -e SLACK_VERSION="$SLACK_VERSION" \
   -e SLACK_SOURCE_URL="${SLACK_SOURCE_URL:-}" \
   -e NATIVE_KEYMAP_VERSION="$NATIVE_KEYMAP_VERSION" \
@@ -104,32 +124,51 @@ docker run --rm "${PLATFORM_ARGS[@]}" \
   slack-flatpak-native:latest \
   bash /work/scripts/build-all.sh
 
-PAYLOAD="$WORK/out/slack-$SLACK_VERSION-arm64.tar.xz"
-[ -f "$PAYLOAD" ] || { echo "payload not produced: $PAYLOAD" >&2; exit 1; }
-echo "Payload: $PAYLOAD ($(du -h "$PAYLOAD" | cut -f1))"
+OVERLAY="$WORK/out/slack-overlay-$SLACK_VERSION-arm64.tar.xz"
+EXTRA_ENV="$WORK/out/extra-data.env"
+[ -f "$OVERLAY" ] || { echo "overlay not produced: $OVERLAY" >&2; exit 1; }
+[ -f "$EXTRA_ENV" ] || { echo "extra-data.env not produced" >&2; exit 1; }
+echo "Overlay: $OVERLAY ($(du -h "$OVERLAY" | cut -f1))"
+# shellcheck disable=SC1090
+. "$EXTRA_ENV"
 
 # ---- 3) stage the flatpak build dir (fresh, USER-OWNED) ----
 # A dedicated user-owned dir (not .work, which may hold root-owned files from an
 # earlier root run that a sudo-less host user cannot remove). It holds the
-# manifest, payload, install script, and — across builds — the cached aarch64
-# runtime, so the runtime is downloaded once and reused.
+# manifest, overlay, install scripts, and the build output repo (.fp/repo).
 FP_DIR="$HERE/.fp"
 log "Staging Flatpak build dir ($FP_DIR)"
 mkdir -p "$FP_DIR"
+rm -rf "$FP_DIR/repo" "$FP_DIR/build-dir" 2>/dev/null || true   # may be root-owned (docker); flatpak-builder appends otherwise
 cp -f "$HERE/manifest/com.slack.Slack.json" "$FP_DIR/manifest.json"
 cp -f "$HERE/manifest/slack-install.sh"     "$FP_DIR/slack-install.sh"
+cp -f "$HERE/manifest/apply_extra"          "$FP_DIR/apply_extra"
+cp -f "$HERE/manifest/metainfo.xml"         "$FP_DIR/metainfo.xml"
 cp -f "$HERE/build-flatpak.sh"              "$FP_DIR/build-flatpak.sh"
-cp -f "$PAYLOAD"                            "$FP_DIR/slack-arm64.tar.xz"
-chmod +x "$FP_DIR/slack-install.sh" "$FP_DIR/build-flatpak.sh"
-# Render runtime/app-id into the manifest + install script.
-for f in manifest.json slack-install.sh; do
+cp -f "$OVERLAY"                            "$FP_DIR/slack-overlay.tar.xz"
+chmod +x "$FP_DIR/slack-install.sh" "$FP_DIR/build-flatpak.sh" "$FP_DIR/apply_extra"
+# Render runtime/app-id + the extra-data description into the staged files.
+for f in manifest.json slack-install.sh apply_extra metainfo.xml; do
   sed -i \
     -e "s|@APP_ID@|$SLACK_APP_ID|g" \
     -e "s|@RUNTIME@|$FLATPAK_RUNTIME|g" \
     -e "s|@RUNTIME_VERSION@|$FLATPAK_RUNTIME_VERSION|g" \
     -e "s|@RUNTIME_SDK@|$FLATPAK_SDK|g" \
+    -e "s|@SLACK_VERSION@|$SLACK_VERSION|g" \
+    -e "s|@RELEASE_DATE@|$(date -u +%Y-%m-%d)|g" \
+    -e "s|@PROJECT_URL@|$PROJECT_URL|g" \
+    -e "s|@SLACK_DEB_URL@|$SLACK_DEB_URL|g" \
+    -e "s|@SLACK_DEB_SHA256@|$SLACK_DEB_SHA256|g" \
+    -e "s|@SLACK_DEB_SIZE@|$SLACK_DEB_SIZE|g" \
+    -e "s|@SLACK_DEB_APPDIR@|$SLACK_DEB_APPDIR|g" \
+    -e "s|@SDU_URL@|$SDU_URL|g" \
+    -e "s|@SDU_SHA256@|$SDU_SHA256|g" \
+    -e "s|@SDU_SIZE@|$SDU_SIZE|g" \
+    -e "s|@SDU_DEST@|$SDU_DEST|g" \
     "$FP_DIR/$f"
 done
+! grep -n '@[A-Z_]*@' "$FP_DIR/manifest.json" "$FP_DIR/apply_extra" "$FP_DIR/metainfo.xml" "$FP_DIR/slack-install.sh" \
+  || { echo "unrendered placeholders remain (see above)" >&2; exit 1; }
 
 # ---- 4) flatpak stage -> self-contained bundle ----
 # Arch rule: flatpak-builder must run on the HOST arch (no --platform) so its
@@ -146,7 +185,7 @@ docker build \
   -f "$HERE/Dockerfile.flatpak" "$HERE"
 
 # shellcheck disable=SC2086
-docker run --rm \
+docker run --rm "${ENGINE_RUN_ARGS[@]}" \
   $FLATPAK_DOCKER_FLAGS \
   -e FLATPAK_ARCH="$FLATPAK_ARCH" \
   -e FLATPAK_RUNTIME="$FLATPAK_RUNTIME" \
@@ -166,13 +205,12 @@ BUNDLE="$FP_DIR/$SLACK_APP_ID.$FLATPAK_ARCH.flatpak"
 
 # ---- 5) collect outputs ----
 log "Collecting outputs -> $OUT_DIR"
-cp -f "$PAYLOAD" "$OUT_DIR/"
-cp -f "$BUNDLE"  "$OUT_DIR/"
+cp -f "$BUNDLE" "$WORK/out/build-inputs.json" "$EXTRA_ENV" "$OUT_DIR/"
 
 echo
-echo "Done."
-echo "  Payload : $OUT_DIR/slack-$SLACK_VERSION-arm64.tar.xz"
+echo "Done (Slack $SLACK_VERSION)."
 echo "  Bundle  : $OUT_DIR/$SLACK_APP_ID.$FLATPAK_ARCH.flatpak"
+echo "  Repo    : $FP_DIR/repo  (publish with ci/publish-repo.sh)"
 echo
 echo "Install on any distro with Flatpak:"
 echo "  flatpak install $OUT_DIR/$SLACK_APP_ID.$FLATPAK_ARCH.flatpak"

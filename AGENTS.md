@@ -10,7 +10,8 @@ for how the tool is used and what it produces.
 Do **not** commit any build artifact or downloaded input as code. These are all
 git-ignored and must stay that way:
 
-- `dist/` — the deliverable `.flatpak` bundle + the arm64 payload tarball
+- `dist/` — the `.flatpak` bundle + build records
+- `site/` — the generated GitHub Pages site / OSTree repo (`ci/publish-repo.sh`)
 - `.cache/` — the downloaded Slack source package (~100 MB)
 - `.fp/`, `.work/` — per-build work dirs (staging, build trees)
 - `.npm-cache/` — npm cache
@@ -28,6 +29,39 @@ This is a **rule**, not just hygiene, for two reasons:
 
 If a test or check needs an artifact, generate it into `dist/` / `.work` (ignored),
 never into a tracked path.
+
+## Extra-data: Slack is never in the flatpak (do not regress this)
+
+The published repo is public, so the flatpak must not contain anything from Slack's
+package. `native/05-assemble.sh` packages only:
+- `electron/`: the stock arm64 Electron zip (binary renamed `slack`, `resources/` removed)
+- `native/`: arm64 `.node` files built from MIT npm sources, plus our no-op stubs
+
+Slack's `.deb` and Slack's arm64 `slack-desktop-utils` prebuild are `extra-data` sources
+(URL + sha256 + size are rendered into the manifest from `extra-data.env`). At install time,
+`manifest/apply_extra` (with no network, cwd `/app/extra`) extracts `resources/` from the
+`.deb`, overlays the arm64 `.node` files, and fails if any x86-64 `.node` remains.
+`/app/slack/resources` is a symlink to `/app/extra/resources`, because Electron loads
+`resources/` from next to its real binary.
+
+- Stages 01–04 still build a **full** arm64 app tree. It's a build-time check that every
+  native module has an arm64 replacement, and it is never packaged. 05 has a leak guard.
+  Keep both.
+- `apply_extra` may only use tools in the runtime (`bsdtar`, coreutils, `find`, `file`).
+  `org.gnome.Platform` has them, but the SDK-only tools (`ar`, `dpkg-deb`) are not available.
+- A **new** native module in a future Slack release must get an arm64 build or a stub in
+  stage 04. Otherwise stage 04's arch check fails the build, which is what we want.
+- The `.deb` is checked against Slack's CDN URL at install time. A `SLACK_SOURCE_FILE` that
+  differs from the CDN file therefore produces a repo nobody can install from.
+
+## Publishing (`ci/publish-repo.sh`, `.github/workflows/build.yml`)
+- Pages deployments replace the whole site. The script mirrors the currently published
+  commit back before committing, so there's a parent for the static delta, and then prunes to
+  depth 1 so the site stays far below the 1 GB Pages limit.
+- Commits and summary are GPG-signed with the `GPG_PRIVATE_KEY` secret. If you rotate the key,
+  every user has to re-add the remote.
+- A GitHub release `v<slack version>` marks a version as published. The check job skips
+  versions that already have one, unless `force` is set.
 
 ## Non-obvious implementation notes
 
@@ -70,9 +104,9 @@ image lacks. `Dockerfile.flatpak` installs `elfutils` for this — don't drop it
 ### flatpak-builder manifest quirks (see `manifest/com.slack.Slack.json`)
 - The manifest **must** declare `sdk` **and** `sdk-version` (aarch64: `org.gnome.Sdk`
   / `51`); current flatpak-builder rejects manifests without them.
-- Local sources use `type: "file"` + `path:` (the local payload tarball + install
+- Local sources use `type: "file"` + `path:` (the local overlay tarball + install
   script) — not `url:`.
-- The payload is extracted with `tar … --no-same-owner` (the sandbox refuses the
+- The overlay is extracted with `tar … --no-same-owner` (the sandbox refuses the
   default owner remap for a root-owned tarball).
 - `flatpak build-bundle` positional order is `LOCATION FILENAME NAME [BRANCH]`;
   `--arch` and `--runtime-repo` are **options**, not positionals (see
