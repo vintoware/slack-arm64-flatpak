@@ -12,6 +12,11 @@
 #
 # build.sh renders @SLACK_DEB_APPDIR@ (e.g. usr/lib/slack) and @SDU_DEST@.
 #
+# Never preserve file ownership here. For a system-wide install, flatpak's system
+# helper runs this as root in a user namespace with only a few uids mapped, so
+# chown'ing to an archive's owner (Slack's prebuild tarball says uid 1001) fails
+# with EINVAL and aborts the install. Hence `bsdtar --no-same-owner` and plain `cp -R`.
+#
 set -eu
 
 DEB_APPDIR="@SLACK_DEB_APPDIR@"
@@ -22,17 +27,17 @@ rm -rf resources _deb _sdu
 
 # 1) Slack's resources/ from the official package
 mkdir _deb
-bsdtar -Oxf slack.deb 'data.tar*' | bsdtar -xf - -C _deb "./$DEB_APPDIR/resources"
+bsdtar -Oxf slack.deb 'data.tar*' | bsdtar --no-same-owner -xf - -C _deb "./$DEB_APPDIR/resources"
 [ -f "_deb/$DEB_APPDIR/resources/app.asar" ] || { echo "apply_extra: app.asar not found in slack.deb" >&2; exit 1; }
 mv "_deb/$DEB_APPDIR/resources" resources
 rm -rf _deb slack.deb
 
 # 2) arm64 native modules built from open source + no-op stubs
-cp -a /app/lib/slack-native/. "$NM/"
+cp -R /app/lib/slack-native/. "$NM/"
 
 # 3) Slack's proprietary arm64 slack-desktop-utils prebuild
 mkdir _sdu
-bsdtar -xf slack-desktop-utils.tar.gz -C _sdu
+bsdtar --no-same-owner -xf slack-desktop-utils.tar.gz -C _sdu
 SDU_NODE="$(find _sdu -name slackdesktoputils.node | head -n 1)"
 [ -n "$SDU_NODE" ] || { echo "apply_extra: slackdesktoputils.node not in prebuild" >&2; exit 1; }
 install -D -m 644 "$SDU_NODE" "$NM/$SDU_DEST"
