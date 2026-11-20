@@ -11,7 +11,6 @@ Do **not** commit any build artifact or downloaded input as code. These are all
 git-ignored and must stay that way:
 
 - `dist/` — the `.flatpak` bundle + build records
-- `site/` — the generated GitHub Pages site / OSTree repo (`ci/publish-repo.sh`)
 - `.cache/` — the downloaded Slack source package (~100 MB)
 - `.fp/`, `.work/` — per-build work dirs (staging, build trees)
 - `.npm-cache/` — npm cache
@@ -54,14 +53,15 @@ Slack's `.deb` and Slack's arm64 `slack-desktop-utils` prebuild are `extra-data`
 - The `.deb` is checked against Slack's CDN URL at install time. A `SLACK_SOURCE_FILE` that
   differs from the CDN file therefore produces a repo nobody can install from.
 
-## Publishing (`ci/publish-repo.sh`, `.github/workflows/build.yml`)
-- Pages deployments replace the whole site. The script mirrors the currently published
-  commit back before committing, so there's a parent for the static delta, and then prunes to
-  depth 1 so the site stays far below the 1 GB Pages limit.
-- Commits and summary are GPG-signed with the `GPG_PRIVATE_KEY` secret. If you rotate the key,
-  every user has to re-add the remote.
-- A GitHub release `v<slack version>` marks a version as published. The check job skips
-  versions that already have one, unless `force` is set.
+## Publishing (`.github/workflows/build.yml`)
+This repo only builds. Hosting, signing and Pages are handled by the separate
+[`vintoware/flatpak-repo`](https://github.com/vintoware/flatpak-repo):
+- The workflow attaches the bundle to the GitHub release `v<slack version>`, then pushes
+  `apps/com.slack.Slack.aarch64.json` (version, bundle URL, sha256) to `flatpak-repo`
+  using the `FLATPAK_REPO_DEPLOY_KEY` secret, a write deploy key for that repo only.
+  That push triggers `flatpak-repo`'s workflow, which imports the bundle, signs it and deploys.
+- "Already published?" means that pointer file's `version` equals Slack's latest. A failed
+  push therefore retries on the next scheduled run, even though the release already exists.
 
 ## Non-obvious implementation notes
 

@@ -20,7 +20,6 @@
 #   dist/com.slack.Slack.aarch64.flatpak   bundle (installs Slack via extra-data)
 #   dist/build-inputs.json                 versions + hashes (reproducibility record)
 #   dist/extra-data.env                    Slack package URLs/hashes used
-#   .fp/repo                               OSTree repo with the build (ci/publish-repo.sh)
 #
 set -euo pipefail
 
@@ -210,7 +209,6 @@ cp -f "$BUNDLE" "$WORK/out/build-inputs.json" "$EXTRA_ENV" "$OUT_DIR/"
 echo
 echo "Done (Slack $SLACK_VERSION)."
 echo "  Bundle  : $OUT_DIR/$SLACK_APP_ID.$FLATPAK_ARCH.flatpak"
-echo "  Repo    : $FP_DIR/repo  (publish with ci/publish-repo.sh)"
 echo
 echo "Install on any distro with Flatpak:"
 echo "  flatpak install $OUT_DIR/$SLACK_APP_ID.$FLATPAK_ARCH.flatpak"

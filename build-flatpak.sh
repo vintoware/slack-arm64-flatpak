@@ -18,6 +18,10 @@ cd /work
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 export FLATPAK_USER_DATA=/root/.local/share/flatpak
 mkdir -p "$FLATPAK_USER_DATA" "$XDG_RUNTIME_DIR"
+# flatpak (1.16) refuses a user installation as root unless root owns it. The dir is a
+# host bind mount: with docker it may be owned by the host user (e.g. created by the
+# CI runner); with rootless podman, root here IS the host user, so this is a no-op.
+chown -R 0:0 "$FLATPAK_USER_DATA"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 echo "flatpak:   $(flatpak --version 2>/dev/null || echo n/a)"

@@ -1,8 +1,13 @@
 name: Build and publish
 
-# Checks Slack's latest Linux release every 4 hours. When there is no GitHub release
-# for it yet, builds the aarch64 flatpak, folds it into the Flatpak repo served from
-# GitHub Pages, and creates the release (which also marks the version as done).
+# Checks Slack's latest Linux release every 4 hours. When the Flatpak repo
+# (FLATPAK_REPO) doesn't list that version yet, this workflow:
+#   1. builds the aarch64 flatpak on an arm64 runner,
+#   2. attaches the bundle to the GitHub release v<version> (the bundle has no Slack
+#      code; Slack is downloaded from Slack at install time via extra-data),
+#   3. pushes apps/com.slack.Slack.aarch64.json (version + bundle URL + sha256) to
+#      FLATPAK_REPO with a deploy key. That push triggers FLATPAK_REPO's own workflow,
+#      which signs the build into its OSTree repo and deploys GitHub Pages.
 # If Slack's arm64 slack-desktop-utils prebuild isn't published yet, the build fails
 # and the next scheduled run retries.
 
@@ -16,18 +21,20 @@ on:
         type: string
         default: ""
       force:
-        description: "Rebuild and republish even if this version is already released"
+        description: "Rebuild and republish even if this version is already published"
         type: boolean
         default: false
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: slack-arm64-flatpak
   cancel-in-progress: false
+
+env:
+  FLATPAK_REPO: vintoware/flatpak-repo
+  APP_POINTER: apps/com.slack.Slack.aarch64.json
 
 jobs:
   check:
@@ -49,11 +56,11 @@ jobs:
               | jq -er 'select(.ok) | .version')
           fi
           [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "::error::unexpected Slack version '$version'"; exit 1; }
+          published=$(gh api "repos/$FLATPAK_REPO/contents/$APP_POINTER" --jq .content 2>/dev/null \
+            | base64 -d | jq -r .version 2>/dev/null || true)
           build=true
-          if [ "$FORCE" != true ] && gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            build=false
-          fi
-          echo "Slack $version -> build=$build"
+          if [ "$FORCE" != true ] && [ "$published" = "$version" ]; then build=false; fi
+          echo "Slack latest=$version published=${published:-none} -> build=$build"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
@@ -62,49 +69,56 @@ jobs:
     if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     env:
       SLACK_VERSION: ${{ needs.check.outputs.version }}
       PROJECT_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Pages URL
-        run: echo "SITE_URL=https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
-
       - name: Build flatpak
         run: ./build.sh
-
-      - name: Assemble Flatpak repo
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src \
-            -e GPG_PRIVATE_KEY -e SITE_URL -e SLACK_VERSION -e PROJECT_URL -e GITHUB_REPOSITORY \
-            slack-flatpak-builder:latest bash ci/publish-repo.sh
-
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-
-      - id: deploy
-        uses: actions/deploy-pages@v5
 
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v$SLACK_VERSION"
-          files=(dist/*.flatpak dist/build-inputs.json)
+          files=(dist/com.slack.Slack.aarch64.flatpak dist/build-inputs.json)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber
           else
-            notes="Slack $SLACK_VERSION for aarch64, published to $SITE_URL
+            notes="Slack $SLACK_VERSION for aarch64. Install from https://${FLATPAK_REPO%%/*}.github.io/${FLATPAK_REPO#*/}/
 
-          Install: \`flatpak remote-add --user slack-arm64 $SITE_URL/slack-arm64.flatpakrepo && flatpak install --user slack-arm64 com.slack.Slack\`
-
-          The bundle below contains no Slack code; Slack's package is downloaded from Slack at install time."
+          The bundle contains no Slack code: Slack's official package is downloaded from Slack at install time (flatpak extra-data)."
             gh release create "$tag" "${files[@]}" --title "Slack $SLACK_VERSION (arm64)" --notes "$notes"
           fi
+
+      - name: Publish to ${{ env.FLATPAK_REPO }}
+        env:
+          DEPLOY_KEY: ${{ secrets.FLATPAK_REPO_DEPLOY_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          # GitHub's published SSH host key (docs: "GitHub's SSH key fingerprints")
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$DEPLOY_KEY" | ssh-add -
+
+          dest="$RUNNER_TEMP/flatpak-repo"
+          git clone --depth 1 "git@github.com:$FLATPAK_REPO.git" "$dest"
+          bundle=dist/com.slack.Slack.aarch64.flatpak
+          mkdir -p "$(dirname "$dest/$APP_POINTER")"
+          jq -n \
+            --arg version "$SLACK_VERSION" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$SLACK_VERSION/com.slack.Slack.aarch64.flatpak" \
+            --arg sha "$(sha256sum "$bundle" | cut -d' ' -f1)" \
+            --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$SLACK_VERSION" \
+            '{id: "com.slack.Slack", arch: "aarch64", branch: "master", version: $version,
+              bundle_url: $url, bundle_sha256: $sha, source: $source}' > "$dest/$APP_POINTER"
+          cat "$dest/$APP_POINTER"
+
+          cd "$dest"
+          git add "$APP_POINTER"
+          if git diff --cached --quiet; then echo "pointer unchanged"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Slack $SLACK_VERSION (aarch64)" -m "From $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          git push origin HEAD

@@ -1,7 +1,8 @@
 # Slack Desktop for Linux aarch64 — Flatpak repo
 
-Slack Desktop running natively on **aarch64 (arm64)** Linux, from a Flatpak repo
-hosted on GitHub Pages and rebuilt by GitHub Actions every time Slack ships a release.
+Slack Desktop running natively on **aarch64 (arm64)** Linux. This repo holds the build;
+GitHub Actions rebuilds it whenever Slack ships a release and publishes it to the Flatpak
+repo [vintoware/flatpak-repo](https://github.com/vintoware/flatpak-repo) (GitHub Pages).
 
 Fork of [Josholith/slack-linux-arm64-flatpak](https://github.com/Josholith/slack-linux-arm64-flatpak)
 (MIT). It keeps the upstream build and adds two things:
@@ -14,8 +15,8 @@ Fork of [Josholith/slack-linux-arm64-flatpak](https://github.com/Josholith/slack
   `slack-desktop-utils` prebuild **from Slack's servers**, checks their SHA-256 hashes, and
   assembles the app on your machine (`manifest/apply_extra`).
 - **Automatic updates.** `.github/workflows/build.yml` checks Slack's release API every
-  4 hours. For a new version it builds on a native arm64 runner, adds the result to the
-  signed OSTree repo on GitHub Pages, and creates a GitHub release.
+  4 hours. For a new version it builds on a native arm64 runner, attaches the bundle to a
+  GitHub release, and hands it to `flatpak-repo`, which signs and serves it.
 
 > Unofficial. Not affiliated with or supported by Slack.
 
@@ -23,13 +24,13 @@ Fork of [Josholith/slack-linux-arm64-flatpak](https://github.com/Josholith/slack
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak remote-add --user --if-not-exists slack-arm64 https://vintoware.github.io/slack-arm64-flatpak/slack-arm64.flatpakrepo
-flatpak install --user slack-arm64 com.slack.Slack
+flatpak remote-add --user --if-not-exists vintoware https://vintoware.github.io/flatpak-repo/vintoware.flatpakrepo
+flatpak install --user vintoware com.slack.Slack
 ```
 
 New Slack versions arrive with a regular `flatpak update`. Flathub provides the
-`org.gnome.Platform` runtime. The repo is signed with the key in `slack-arm64-flatpak.gpg.asc`
-(fingerprint `53642E94B0CC55BAB30D88A2347FA5BF6B767DC1`).
+`org.gnome.Platform` runtime. The repo is GPG-signed; see
+[flatpak-repo](https://github.com/vintoware/flatpak-repo) for the key.
 
 ## How it works
 
@@ -43,7 +44,8 @@ official Slack .deb (x86_64)  ──►  native/01..04   detect Slack's Electron
                                                    ─► extra-data.env (Slack URLs + sha256 + size)
 manifest/ (org.gnome.Platform:51)  ──►  flatpak-builder: /app = overlay, launcher, desktop file,
                                         icon, metainfo; extra-data = Slack .deb + SDU prebuild
-ci/publish-repo.sh                 ──►  signed OSTree repo + .flatpakrepo/.flatpakref on Pages
+GitHub release (bundle)            ──►  apps/com.slack.Slack.aarch64.json pushed to flatpak-repo,
+                                        which signs it into its OSTree repo on GitHub Pages
 
 on the user's machine, at install/update time (flatpak, no network in the hook):
   download slack.deb + slack-desktop-utils.tar.gz from Slack  ──►  apply_extra:
@@ -76,12 +78,14 @@ full list of linked libraries and the reasoning.
 | Release check | Slack's API: `https://slack.com/api/desktop.latestRelease?arch=x64&variant=deb` |
 | "Already built?" | a GitHub release tagged `v<slack version>` exists |
 | Build runner | `ubuntu-24.04-arm` (native arm64, so no QEMU) |
-| Flatpak repo | GitHub Pages (`actions/deploy-pages`); `ci/publish-repo.sh` mirrors the published commit back first, so updates ship as small static deltas. History is pruned to one parent |
-| Signing | `GPG_PRIVATE_KEY` repository secret (no passphrase). The public key is embedded in the `.flatpakrepo` and `.flatpakref` files |
+| "Already published?" | `apps/com.slack.Slack.aarch64.json` in `vintoware/flatpak-repo` already lists that version |
+| Artifact | `com.slack.Slack.aarch64.flatpak` on the GitHub release `v<version>` (it contains no Slack code) |
+| Hand-off | the workflow pushes the pointer file (version, URL, sha256) to `flatpak-repo` using the `FLATPAK_REPO_DEPLOY_KEY` secret |
+| Hosting/signing | `flatpak-repo`'s workflow imports the bundle, signs it, builds static deltas and deploys to Pages |
 | Manual run | Actions → *Build and publish* → *Run workflow* (optional `version`, `force`) |
 
 If Slack hasn't published the arm64 `slack-desktop-utils` prebuild for a new release
-yet, stage 04 fails. No release gets created, so the next scheduled run tries again.
+yet, stage 04 fails. Nothing is published, so the next scheduled run tries again.
 
 ## How this differs from Slacky
 
@@ -145,7 +149,6 @@ Outputs in `dist/`:
 | `build-inputs.json` | versions + SHA-256 (reproducibility record) |
 | `extra-data.env` | the Slack package URLs/hashes the build declares |
 
-`.fp/repo` holds the OSTree repo that `ci/publish-repo.sh` folds into the published one.
 
 Install on any machine with Flatpak:
 ```sh
@@ -180,8 +183,7 @@ Dockerfile.flatpak        # flatpak + flatpak-builder
 .env.example              # all knobs
 native/                   # 01-fetch → 02-detect → 03-electron → 04-native → 05-assemble (+ stubs/)
 manifest/                 # com.slack.Slack.json, slack-install.sh, apply_extra, metainfo.xml
-ci/publish-repo.sh        # fold a build into the Pages-hosted OSTree repo + site files
-.github/workflows/        # scheduled release check, build, publish
+.github/workflows/        # scheduled release check, build, release, hand-off to flatpak-repo
 ```
 
 ## Known limitations
