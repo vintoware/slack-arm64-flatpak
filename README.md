@@ -186,6 +186,15 @@ manifest/                 # com.slack.Slack.json, slack-install.sh, apply_extra,
 .github/workflows/        # scheduled release check, build, release, hand-off to flatpak-repo
 ```
 
+## Sandboxing
+
+Chromium's sandbox is **on**. A setuid `chrome-sandbox` can't work inside flatpak, so
+the launcher runs Electron through [zypak](https://github.com/refi64/zypak), built as a
+module from the same tag Flathub's Electron BaseApp uses. zypak starts Chromium's
+renderer and zygote processes through the Flatpak portal (`flatpak-spawn --sandbox`),
+which puts them in a second, stricter sandbox with Chromium's seccomp filter on top.
+Flathub's `com.slack.Slack` works the same way.
+
 ## Camera
 
 The camera goes through PipeWire and the xdg camera portal (Chromium's

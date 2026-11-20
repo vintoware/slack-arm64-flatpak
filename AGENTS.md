@@ -53,6 +53,16 @@ Slack's `.deb` and Slack's arm64 `slack-desktop-utils` prebuild are `extra-data`
 - The `.deb` is checked against Slack's CDN URL at install time. A `SLACK_SOURCE_FILE` that
   differs from the CDN file therefore produces a repo nobody can install from.
 
+## Chromium sandbox: zypak (never `--no-sandbox`)
+`/app/bin/slack` runs `zypak-wrapper /app/slack/slack`. The `zypak` module is pinned to
+the tag/commit used by `org.electronjs.Electron2.BaseApp` and builds against
+`libsystemd` + `dbus-1` from the GNOME SDK. It needs `git` in `Dockerfile.flatpak`. zypak
+only works in an **installed** app: its child sandboxes can see `/app` and the runtime but
+no host paths. So test it by installing `.fp/repo` (e.g. `FLATPAK_USER_DIR=$PWD/.flatpak-user`)
+and running through the real launcher. Signs that it's working: renderers/zygote run in a
+different mount namespace from the browser process, and get their own `flatpak ps`
+instances. `TMPDIR` points at `$XDG_CACHE_HOME` because those sandboxes don't share `/tmp`.
+
 ## Camera: PipeWire + portal, with `pw-camera-filter`
 The launcher enables `WebRtcPipeWireCamera`, so Chromium reaches the camera through the
 xdg camera portal and PipeWire, and the manifest needs no `--device=all`. Chromium's

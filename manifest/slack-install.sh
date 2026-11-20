@@ -25,13 +25,19 @@ cp -a "$O/native/." /app/lib/slack-native/
 # 3) install-time hook
 install -D -m 755 apply_extra /app/bin/apply_extra
 
-# 4) launcher. The setuid chrome-sandbox is not usable inside a flatpak sandbox,
-#    so disable the SUID sandbox (Electron falls back to/without the ns sandbox).
+# 4) launcher. Chromium's sandbox stays ON: the setuid chrome-sandbox can't work
+#    inside flatpak, so zypak (built in the zypak module) redirects Chromium's
+#    sandboxed process creation to the Flatpak portal (flatpak-spawn --sandbox).
+#    Same approach as Flathub's com.slack.Slack.
+#    TMPDIR: the per-process sandboxes don't share /tmp, so point it at the app's cache.
 #    WebRtcPipeWireCamera: use the camera through PipeWire + the xdg camera portal,
 #    so no --device=all is needed (see pw-camera-filter for the Apple camera fix).
 cat > /app/bin/slack <<'LAUNCHER'
 #!/bin/sh
-exec /app/slack/slack --no-sandbox --disable-gpu-sandbox --enable-features=WebRtcPipeWireCamera "$@"
+export TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}"
+XDG_DOWNLOAD_DIR="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+[ -n "$XDG_DOWNLOAD_DIR" ] && export XDG_DOWNLOAD_DIR
+exec zypak-wrapper /app/slack/slack --enable-features=WebRtcPipeWireCamera "$@"
 LAUNCHER
 chmod 755 /app/bin/slack
 
