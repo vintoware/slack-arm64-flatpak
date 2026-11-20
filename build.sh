@@ -70,7 +70,7 @@ if [ -z "${CONTAINER_ENGINE:-}" ]; then
 fi
 ENGINE_RUN_ARGS=()
 [ "$(basename "$CONTAINER_ENGINE")" = podman ] && ENGINE_RUN_ARGS+=(--security-opt label=disable)
-docker() { "$CONTAINER_ENGINE" "$@"; }
+docker() { command "$CONTAINER_ENGINE" "$@"; }   # `command`: skip this function when the engine is docker
 
 WORK="$HERE/.work"
 CACHE_DIR="${SLACK_CACHE_DIR:-$HERE/.cache}"
